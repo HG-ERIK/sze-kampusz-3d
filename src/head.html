@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>SZE Kampusz 3D</title>
+<style>
+  :root { --panel: rgba(18,22,28,.78); --text: #f1f1ee; --muted: #b5b9bf; --accent: #e3a33b; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #bcd6ee; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: var(--text); }
+  canvas#view { display: block; width: 100%; height: 100%; touch-action: none; }
+  #overlay { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(10,14,20,.55); z-index: 10; padding: 16px; box-sizing: border-box; }
+  #overlay.hidden { display: none; }
+  .card { background: var(--panel); backdrop-filter: blur(8px); border-radius: 14px; padding: 22px 24px; max-width: 640px; width: 100%; max-height: 100%; overflow: auto; box-sizing: border-box; box-shadow: 0 10px 40px rgba(0,0,0,.35); }
+  h1 { margin: 0 0 4px; font-size: 22px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+  #start { background: var(--accent); color: #1b1404; border: 0; border-radius: 10px; padding: 12px 18px; font-size: 16px; font-weight: 700; cursor: pointer; width: 100%; }
+  .keys { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13px; margin: 14px 0; }
+  kbd { background: #2b313a; border: 1px solid #444c57; border-radius: 4px; padding: 1px 6px; font-size: 12px; font-family: inherit; white-space: nowrap; }
+  h2 { font-size: 14px; margin: 16px 0 8px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  #tp { display: flex; flex-wrap: wrap; gap: 6px; }
+  #tp button { background: #2b313a; color: var(--text); border: 1px solid #434b56; border-radius: 8px; padding: 6px 10px; font-size: 13px; cursor: pointer; }
+  #tp button:hover { border-color: var(--accent); }
+  .note { font-size: 11.5px; color: var(--muted); margin-top: 14px; line-height: 1.45; }
+  .note a { color: var(--muted); }
+  #cross { position: fixed; left: 50%; top: 50%; width: 14px; height: 14px; margin: -7px 0 0 -7px; pointer-events: none; z-index: 5; }
+  #cross:before, #cross:after { content: ""; position: absolute; background: rgba(255,255,255,.9); box-shadow: 0 0 2px #000; }
+  #cross:before { left: 6px; top: 0; width: 2px; height: 14px; } #cross:after { top: 6px; left: 0; height: 2px; width: 14px; }
+  #info { position: fixed; left: 50%; top: calc(50% + 22px); transform: translateX(-50%); background: var(--panel); border-radius: 8px; padding: 6px 10px; font-size: 13px; pointer-events: none; z-index: 5; text-align: center; white-space: nowrap; display: none; }
+  #info b { color: var(--accent); }
+  #status { position: fixed; left: 12px; bottom: 12px; background: var(--panel); border-radius: 8px; padding: 6px 10px; font-size: 12px; z-index: 5; color: var(--muted); }
+  #mini { position: fixed; right: 12px; top: 12px; width: 200px; height: 200px; border-radius: 50%; border: 3px solid rgba(255,255,255,.85); box-shadow: 0 4px 16px rgba(0,0,0,.3); z-index: 5; background: #e9e6df; }
+  #mini.big { width: 340px; height: 340px; border-radius: 14px; }
+  #north { position: fixed; right: 105px; top: 6px; z-index: 6; font-weight: 800; font-size: 13px; color: #c0392b; text-shadow: 0 0 3px #fff; }
+  #loading { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #1b2028; z-index: 20; font-size: 16px; }
+  #joy { position: fixed; left: 24px; bottom: 60px; width: 120px; height: 120px; border-radius: 50%; border: 2px solid rgba(255,255,255,.5); background: rgba(0,0,0,.15); z-index: 6; display: none; pointer-events: none; }
+  #joy i { position: absolute; left: 40px; top: 40px; width: 40px; height: 40px; border-radius: 50%; background: rgba(255,255,255,.7); }
+  #menuBtn { position: fixed; left: 12px; top: 12px; z-index: 6; background: var(--panel); color: var(--text); border: 0; border-radius: 8px; padding: 8px 12px; font-size: 14px; display: none; }
+  @media (max-width: 600px) { #mini { width: 130px; height: 130px; } #north { right: 70px; } .keys { display: none; } }
+</style>
+</head>
+<body>
+<div id="loading">Kampusz betöltése…</div>
+<canvas id="view"></canvas>
+<div id="cross"></div>
+<div id="info"></div>
+<canvas id="mini" width="400" height="400"></canvas>
+<div id="north">É</div>
+<div id="status"></div>
+<div id="joy"><i></i></div>
+<button id="menuBtn">☰ Menü</button>
+
+<div id="overlay">
+  <div class="card">
+    <h1>Széchenyi István Egyetem – kampusz</h1>
+    <div class="sub">Győr, Egyetem tér 1 · sétálható 3D tervezőmodell valós OpenStreetMap-alaprajzokból</div>
+    <button id="start">▶ Séta indítása</button>
+    <div class="keys">
+      <kbd>W A S D</kbd><span>mozgás</span>
+      <kbd>← →</kbd><span>forgás balra / jobbra</span>
+      <kbd>↑ ↓</kbd><span>fel / le nézés</span>
+      <kbd>Egér</kbd><span>körbenézés (ha van)</span>
+      <kbd>Shift</kbd><span>futás</span>
+      <kbd>Space</kbd><span>ugrás / repülésben fel</span>
+      <kbd>C</kbd><span>repülésben le</span>
+      <kbd>F</kbd><span>repülés be/ki (falakon át, felülnézet tervezéshez)</span>
+      <kbd>L</kbd><span>épületnevek be/ki</span>
+      <kbd>M</kbd><span>kis/nagy térkép</span>
+      <kbd>Esc</kbd><span>menü</span>
+    </div>
+    <h2>Ugrás ide</h2>
+    <div id="tp"></div>
+    <div class="note">
+      Alaprajzok, utak, folyók, fák: © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap közreműködők</a> (ODbL).
+      A magasságok <b>becsültek</b>: OSM szintszám × 3,5 m (oktatási), × 3,0 m (kollégium/egyéb); szintszám nélküli épületeknél alapérték.
+      Mért magasság csak a Járműhajtás laborra (15 m) és a víztoronyra (45 m) van. Lejtős telken (pl. E épület) a mélyebb oldalon szuterénszint bukkan ki.
+      A homlokzatok és textúrák procedurálisak (nem fotók): épülettípusonként ablakkiosztás, az üvegek tükrözik az eget, mögöttük perspektivikus „szobák” látszanak.
+      A domborzat az OSM-lépcsők fokszámából számolt (16 cm/fok, a fő utak = 0 m); a lépcsők mentén a terep a lépcső lejtését követi.
+      A fák helye részben az Esri World Imagery műholdképén detektált lombkorona (a kép nem textúra, csak a fák helye).
+      A <b>vasúti kocsi</b> (MÁV személykocsi, 1975 óta függőhíd a laborok és a központi épület között) a 2023-as felújítás utáni festéssel és belsővel készült,
+      az <b>Üveges</b> belső berendezése (pult, asztalok, terasz) jelképes. Mindkettő bejárható.
+      Link egy ponthoz: <code>#szélesség,hosszúság,irány[,dőlés,magasság]</code> a cím végén (a magasság a talaj fölött, 3 m felett repülés).
+    </div>
+  </div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script id="campus-data" type="application/json">__DATA__</script>
