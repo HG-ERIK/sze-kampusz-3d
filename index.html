@@ -288,6 +288,8 @@ const uni = F.find(f => f.k === 'u');
 const CAMPUS_RE = /egyetem|SZE\b|mobilis|tudás|labor|kollégium|campus|sportcsarnok|parkolólemez|bridge|műteremház|innováció|irodaház|üveges|ipar 4\.0|projektközpont|motorok|^[A-E] épület|igazgatás/i;
 // egyedileg modellezett elemek: a vasúti kocsi-függőhíd és az Üveges pavilon
 const ID_CARRIAGE = 'w697438467', ID_UVEGES = 'r9791554';
+// lépcsőszélességek, ahol az alapértéktől (2,6 m) eltér (kezdőpont szerint; Street View)
+const STAIR_W = { '107.3,-59.4': 4.6 };
 for (const f of F) { f.bb = bbox(f.p); f.c = centroid(f.p); }
 const parts = F.filter(f => f.k === 'b' && f.part);
 const blds = F.filter(f => f.k === 'b' && !f.part);
@@ -297,7 +299,10 @@ for (const f of F.filter(f => f.k === 'b')) {
 }
 function heights(f) {
   const dorm = /koll|multifunk/i.test(f.n || '');
-  const lh = f.campus && !dorm ? 3.5 : 3.0;
+  // a név nélküli 1–2 szintes egyetemi szárnyak laborok: kb. 4,5 m-es szintmagasság (a Street View
+  // és a vasúti kocsi alapján, amely az 1. emeletükre, kb. 4,5 m-re csatlakozik)
+  const labWing = f.campus && !(f.n || (f.parent && f.parent.n)) && f.bt === 'university' && parseFloat(f.l) <= 2;
+  const lh = labWing ? 4.5 : f.campus && !dorm ? 3.5 : 3.0;
   let h = f.h ? parseFloat(f.h) : NaN, est = true;
   if (!isNaN(h)) est = false;
   else if (f.l) h = parseFloat(f.l) * lh + (f.rs && f.rs !== 'flat' ? 2 : 0) + 0.8;
@@ -360,9 +365,10 @@ for (const st of DATA.steps || []) {
   if (pts.length < 2) continue;
   const cum = [0]; for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
   const Lt = cum[cum.length - 1], h0 = pts[0][2], h1 = pts[pts.length - 1][2]; if (Lt < .5) continue;
+  const wh = (STAIR_W[pts[0][0].toFixed(1) + ',' + pts[0][1].toFixed(1)] || 2.6) / 2 + .3;
   const bb = bbox(pts.flatMap(v => [v[0], v[1]]));
-  for (let iz = Math.floor((bb.z0 - 4 + TE) / TS); iz <= Math.ceil((bb.z1 + 4 + TE) / TS); iz++)
-    for (let ix = Math.floor((bb.x0 - 4 + TE) / TS); ix <= Math.ceil((bb.x1 + 4 + TE) / TS); ix++) {
+  for (let iz = Math.floor((bb.z0 - 5 + TE) / TS); iz <= Math.ceil((bb.z1 + 5 + TE) / TS); iz++)
+    for (let ix = Math.floor((bb.x0 - 5 + TE) / TS); ix <= Math.ceil((bb.x1 + 5 + TE) / TS); ix++) {
       if (ix < 0 || iz < 0 || ix >= TN || iz >= TN) continue;
       const x = -TE + ix * TS, z = -TE + iz * TS; let bd = Infinity, ba = 0;
       for (let i = 1; i < pts.length; i++) {
@@ -370,8 +376,8 @@ for (const st of DATA.steps || []) {
         const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2)), d = Math.hypot(ax + t * dx - x, az + t * dz - z);
         if (d < bd) { bd = d; ba = cum[i - 1] + t * Math.sqrt(l2); }
       }
-      if (bd >= 4) continue;
-      const w = bd < 1.6 ? 1 : 1 - (bd - 1.6) / 2.4, k = iz * TN + ix;
+      if (bd >= wh + 2.4) continue;
+      const w = bd < wh ? 1 : 1 - (bd - wh) / 2.4, k = iz * TN + ix;
       HF[k] = HF[k] * (1 - w) + (h0 + (h1 - h0) * ba / Lt) * w;
     }
 }
@@ -445,24 +451,29 @@ function win(R, x0, y0, x1, y1, frame, fw, mull = [], tr = null, acc = 0) {
 }
 const STYLES = {
   // 70-es évekbeli központi épületek (A–D): beton mellvédsávok, végigfutó szalagablak
-  ribbon: { bay: 3.6, wall: '#d3cfc6', glass: '#18222c', metal: .2, depth: 4.5, lights: .35, tints: ['#ffffff', '#f6f4ef', '#eef0f2'],
+  ribbon: { bay: 3.6, wall: '#d6d9db', glass: '#18222c', metal: .2, depth: 4.5, lights: .35, tints: ['#ffffff', '#f6f4ef', '#eef0f2'],
     draw(R, g) {
-      R(0, 0, 1, 1, '#d3cfc6', 0, 1);
+      R(0, 0, 1, 1, '#d6d9db', 0, 1);
       if (g) { win(R, 0, .06, 1, .9, '#5b636b', .012, [.333, .667], .72); return; }
-      R(0, .3, 1, .325, '#a8a49b', 0, 1);
+      R(0, .3, 1, .325, '#aeb2b5', 0, 1);
       win(R, 0, .34, 1, .9, '#5b636b', .012, [.5], .78);
     } },
   // alacsony laborépületek: fehér vakolat, hosszú üvegsáv (mint a fotón a kocsi mellett)
-  lab: { bay: 3.75, wall: '#ecebe7', glass: '#1c2934', metal: .15, depth: 5, lights: .4, tints: ['#ffffff', '#f3f3f1'],
+  lab: { bay: 3.75, wall: '#d9dcde', glass: '#1c2934', metal: .15, depth: 5, lights: .4, tints: ['#ffffff', '#f4f5f6', '#eceef0'],
+    acc: ['#1f3450', '#1f3450', '#24395a', '#d9dcde'],
     draw(R, g) {
-      R(0, 0, 1, 1, '#ecebe7', 0, 1);
-      win(R, 0, g ? .12 : .36, 1, .9, '#7d8791', .012, [.333, .667], g ? .74 : null);
+      R(0, 0, 1, 1, '#d9dcde', 0, 1);
+      if (g) { win(R, 0, .3, 1, .86, '#7d8791', .012, [.333, .667]); return; }
+      // emeleten sötétkék panelsáv függőleges hézagokkal, benne álló ablak (mint a kocsi melletti épületeken)
+      R(0, .2, 1, .94, '#1f3450', 0, 0, 1);
+      for (const x of [.25, .5, .75]) R(x - .004, .2, x + .004, .94, '#14233a');
+      win(R, .36, .36, .64, .84, '#9aa3ab', .02);
     } },
   // kollégiumok: lyukarchitektúra, a parapetek színes panelek
-  dorm: { bay: 3.0, wall: '#e8e2d6', glass: '#1b232b', metal: 0, depth: 3.8, lights: .3, tints: ['#ffffff', '#f5efe4'], acc: ['#c8693a', '#d99a3a', '#c8693a', '#8fb0c6'],
+  dorm: { bay: 3.0, wall: '#e3e5e6', glass: '#1b232b', metal: 0, depth: 3.8, lights: .3, tints: ['#ffffff', '#f5efe4'], acc: ['#2b4466', '#2b4466', '#3d5a80', '#c9d0d6'],
     draw(R, g) {
-      R(0, 0, 1, 1, '#e8e2d6', 0, 1);
-      if (!g) R(.14, .06, .86, .29, '#c8693a', 0, 0, 1);
+      R(0, 0, 1, 1, '#e3e5e6', 0, 1);
+      if (!g) R(.14, .06, .86, .29, '#2b4466', 0, 0, 1);
       win(R, .16, .3, .84, .86, '#f2f2f0', .022, [.5]);
     } },
   // Multifunkcionális Épület: fehér, színes ablakkeretek
@@ -819,8 +830,8 @@ function ribbonGeo(list, norm = false) {
       const ux = dx / L, uz = dz / L, nx = -uz * w, nz = ux * w;
       ax -= ux * w * .5; az -= uz * w * .5; bx += ux * w * .5; bz += uz * w * .5;
       const Lx = L + w, u0s = cum - w * .5; cum += L;
-      // 3 m-es darabokra bontjuk, hogy kövesse a domborzatot
-      const n = Math.max(1, Math.ceil(Lx / 3));
+      // 1,5 m-es darabokra bontjuk, hogy kövesse a domborzatot (a terep rácsa 2 m)
+      const n = Math.max(1, Math.ceil(Lx / 1.5));
       const vl = norm ? 1 : w, vr = norm ? 0 : -w;
       for (let k = 0; k < n; k++) {
         const t0 = k / n, t1 = (k + 1) / n;
@@ -836,16 +847,35 @@ function ribbonGeo(list, norm = false) {
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx); g.computeVertexNormals();
   return g;
 }
-const roads = F.filter(f => f.k === 'r' && RW[f.t]);
-const LINED = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential']);
-for (const [list, map, y, norm] of [
-  [roads.filter(r => !FOOT.has(r.t) && LINED.has(r.t) && (parseFloat(r.wd) || RW[r.t]) >= 5.5), T_ROAD, 6, true],
-  [roads.filter(r => !FOOT.has(r.t) && !(LINED.has(r.t) && (parseFloat(r.wd) || RW[r.t]) >= 5.5)), T_SERVICE, 6, false],
-  [roads.filter(r => r.t === 'cycleway'), T_CYCLE, 5, false],
-  [roads.filter(r => FOOT.has(r.t) && r.t !== 'cycleway'), T_FOOT, 5, false]]) {
-  const m = new THREE.Mesh(ribbonGeo(list, norm), new THREE.MeshStandardMaterial({ map, roughness: .95, polygonOffset: true, polygonOffsetFactor: -y, polygonOffsetUnits: -y * 2, side: THREE.DoubleSide }));
-  m.position.y = y * 0.01; m.receiveShadow = true; scene.add(m);
+const closedLine = f => f.p.length >= 8 && f.p[0] === f.p[f.p.length - 2] && f.p[1] === f.p[f.p.length - 1];
+const isArea = f => String(f.id || '').startsWith('r') || (f.t === 'pedestrian' && closedLine(f));
+const allRoads = F.filter(f => f.k === 'r' && RW[f.t]);
+const roads = allRoads.filter(f => !isArea(f));
+{
+  // területek: azonos azonosítójú gyűrűk együtt, páros-páratlan kitöltéssel (a belső gyűrű lyuk)
+  const byId = new Map(); for (const f of allRoads.filter(isArea)) { if (!byId.has(f.id)) byId.set(f.id, []); byId.get(f.id).push(f); }
+  for (const rings of byId.values()) {
+    gctx.beginPath();
+    for (const f of rings) for (let i = 0; i < f.p.length; i += 2) { const [a, b] = GP(f.p[i], f.p[i + 1]); i ? gctx.lineTo(a, b) : gctx.moveTo(a, b); }
+    gctx.fillStyle = FOOT.has(rings[0].t) ? '#c4bba9' : '#5c5f63'; gctx.fill('evenodd');
+  }
+  gctx.lineCap = gctx.lineJoin = 'round';
+  for (const [list, col] of [[roads.filter(r => FOOT.has(r.t)), '#c4bba9'], [roads.filter(r => r.t === 'cycleway'), '#9c5246'], [roads.filter(r => !FOOT.has(r.t)), '#5c5f63']]) {
+    gctx.strokeStyle = col;
+    for (const r of list) { gctx.lineWidth = (parseFloat(r.wd) || RW[r.t]) * GPX; gctx.beginPath(); for (let i = 0; i < r.p.length; i += 2) { const [a, b] = GP(r.p[i], r.p[i + 1]); i ? gctx.lineTo(a, b) : gctx.moveTo(a, b); } gctx.stroke(); }
+  }
+  gtex.needsUpdate = true;
 }
+const LINED = new Set(['motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'residential']);
+const wide = r => LINED.has(r.t) && (parseFloat(r.wd) || RW[r.t]) >= 5.5;
+// rétegek alulról felfelé: járda, kerékpárút, kiszolgáló út, főút (az autóút takarja a járdát a kereszteződésben)
+[[roads.filter(r => FOOT.has(r.t) && r.t !== 'cycleway'), T_FOOT, false],
+ [roads.filter(r => r.t === 'cycleway'), T_CYCLE, false],
+ [roads.filter(r => !FOOT.has(r.t) && !wide(r)), T_SERVICE, false],
+ [roads.filter(r => !FOOT.has(r.t) && wide(r)), T_ROAD, true]].forEach(([list, map, norm], k) => {
+  const m = new THREE.Mesh(ribbonGeo(list, norm), new THREE.MeshStandardMaterial({ map, roughness: .95, polygonOffset: true, polygonOffsetFactor: -2 - k, polygonOffsetUnits: -4 - 4 * k, side: THREE.DoubleSide }));
+  m.position.y = 0.04 + k * 0.012; m.renderOrder = k; m.receiveShadow = true; scene.add(m);
+});
 
 // ---------- összevont statikus hálók (bútorok, kocsi, pavilon): anyagonként egy rajzolás ----------
 const batches = new Map();
@@ -1061,7 +1091,7 @@ if (UVEGES) {
   };
   slab(fy - 2.5, fy - .02, new THREE.MeshStandardMaterial({ map: T_CONCRETE, roughness: 1 }));
   { const g = new THREE.ShapeGeometry(sh); g.rotateX(-Math.PI / 2); g.translate(0, fy, 0); const uv = g.attributes.uv, pa = g.attributes.position; for (let i = 0; i < uv.count; i++) uv.setXY(i, pa.getX(i), pa.getZ(i)); addGeo(g, new THREE.MeshStandardMaterial({ map: floorTex, roughness: .55, envMap: ENV, envMapIntensity: .4 }), new THREE.Matrix4()); }
-  slab(fy + WH, fy + WH + .45, new THREE.MeshStandardMaterial({ color: 0x33373b, roughness: .6, metalness: .3 }), .35);
+  slab(fy + WH, fy + WH + .45, new THREE.MeshStandardMaterial({ color: 0x1f3450, roughness: .55, metalness: .3, envMap: ENV }), .35);
   // mennyezet (sötét) fénycsíkokkal
   { const g = new THREE.ShapeGeometry(sh); g.rotateX(-Math.PI / 2); g.translate(0, fy + WH - .01, 0); addGeo(g, new THREE.MeshStandardMaterial({ color: 0x45494d, roughness: .9, side: THREE.BackSide, emissive: 0xffffff, emissiveIntensity: .06 }), new THREE.Matrix4(), { cast: false }); }
   const lightM = emissiveMat(0xfff1d6, 1.5);
@@ -1144,15 +1174,29 @@ if (UVEGES) {
   // növények
   for (const [x, z] of [[.6, .6], [Lx - .6, .6], [.6, Wd - .7]]) { geoAt(fr, new THREE.MeshStandardMaterial({ color: 0x8b8378, roughness: .9 }), new THREE.CylinderGeometry(.25, .2, .5, 12), x, .25, z); geoAt(fr, new THREE.MeshStandardMaterial({ map: T_LEAF, color: 0x4f7f3a, roughness: 1 }), new THREE.IcosahedronGeometry(.45, 1), x, .95, z); collider(K, x, z, .3, .3, fy - .2, fy + 1.3); }
   // felirat az attikán (kívül, É-i oldal)
-  const signTex = textTex(1024, 128, (g, w, h) => { g.fillStyle = '#33373b'; g.fillRect(0, 0, w, h); g.fillStyle = '#ffffff'; g.font = '800 92px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('ÜVEGES', w / 2, h / 2 + 4); });
+  const signTex = textTex(1024, 128, (g, w, h) => { g.fillStyle = '#1f3450'; g.fillRect(0, 0, w, h); g.fillStyle = '#ffffff'; g.font = '800 92px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('ÜVEGES', w / 2, h / 2 + 4); });
   geoAt(fr, new THREE.MeshStandardMaterial({ map: signTex, roughness: .5, emissive: 0xffffff, emissiveMap: signTex, emissiveIntensity: .25 }), new THREE.PlaneGeometry(3.6, .45), Lx / 2, WH + .225, -.37, 0, Math.PI, 0, { cast: false });
-  // terasz: asztalok napernyővel az É-i oldalon
-  for (const x of [3, 7.5, 12, 16]) {
-    const lz = -3.2, [wx, wz] = [nw[0] + x * c - lz * s, nw[1] + x * s + lz * c], gy = H(wx, wz);
-    const f2 = frameAt(nw[0], gy, nw[1], ang);
-    table(f2, K, x, lz, 4, true); boxes[boxes.length - 1].y0 = gy - .2; boxes[boxes.length - 1].y1 = gy + .8;
-    box(f2, new THREE.MeshStandardMaterial({ color: 0xe8e2d0 }), .05, 2.4, .05, x, 1.2, lz);
-    geoAt(f2, new THREE.MeshStandardMaterial({ color: x % 2 ? 0x1f4fa3 : 0xe8e2d0, roughness: .8, side: THREE.DoubleSide }), new THREE.ConeGeometry(1.5, .45, 8, 1, true), x, 2.45, lz);
+  // terasz (a Street View alapján): a lépcső felőli végén nagy, többszínű, nyolcszögletű ernyő
+  // piros sörpad-garnitúrákkal, a többi részen asztalok, mellette zöld szemetesek
+  const tw = (lx, lz) => [nw[0] + lx * c - lz * s, nw[1] + lx * s + lz * c];
+  const red = new THREE.MeshStandardMaterial({ color: 0xb3352a, roughness: .7 });
+  const picnic = (F0, x, z, rot) => {
+    box(F0, red, 1.9, .05, .75, x, .76, z, rot); box(F0, red, 1.9, .05, .28, x - Math.sin(rot) * .62, .45, z - Math.cos(rot) * .62, rot); box(F0, red, 1.9, .05, .28, x + Math.sin(rot) * .62, .45, z + Math.cos(rot) * .62, rot);
+    for (const e of [-.75, .75]) box(F0, red, .06, .74, 1.5, x + Math.cos(rot) * e, .37, z - Math.sin(rot) * e, rot);
+  };
+  {
+    const lx = Lx * .22, lz = -4, [wx, wz] = tw(lx, lz), gy = H(wx, wz), f2 = frameAt(nw[0], gy, nw[1], ang);
+    const cols = [0xc23a2f, 0x1f5fb0, 0x2e8b45, 0xc23a2f, 0x1f5fb0, 0xe0b52b, 0x2e8b45, 0x1f5fb0];
+    for (let i = 0; i < 8; i++) geoAt(f2, new THREE.MeshStandardMaterial({ color: cols[i], roughness: .8, side: THREE.DoubleSide }), new THREE.ConeGeometry(4.6, 1.1, 1, 1, true, i * Math.PI / 4, Math.PI / 4), lx, 3.35, lz);
+    for (let i = 0; i < 8; i++) { const a = (i + .5) * Math.PI / 4; box(f2, new THREE.MeshStandardMaterial({ color: cols[i], roughness: .8 }), 3.5, .32, .02, lx + Math.sin(a) * 4.25, 2.66, lz + Math.cos(a) * 4.25, a + Math.PI / 2); }
+    geoAt(f2, steel, new THREE.CylinderGeometry(.07, .09, 3.9, 10), lx, 1.95, lz);
+    for (const [dx, dz] of [[-1.7, -1.4], [1.7, -1.4], [-1.7, 1.4], [1.7, 1.4]]) { picnic(f2, lx + dx, lz + dz, 0); collider(K, lx + dx, lz + dz, 1.0, .95, gy - .2, gy + .8); }
+    const bin = new THREE.MeshStandardMaterial({ color: 0x2f9d4a, roughness: .5 });
+    for (const dx of [-4.8, 5.2]) geoAt(f2, bin, new THREE.CylinderGeometry(.3, .27, 1.0, 14), lx + dx, .5, lz - 1.8);
+  }
+  for (const x of [Lx * .7, Lx * .9]) {
+    const lz = -3.2, [wx, wz] = tw(x, lz), gy = H(wx, wz), f2 = frameAt(nw[0], gy, nw[1], ang);
+    picnic(f2, x, lz, Math.PI / 2); collider(K, x, lz, .95, 1.0, gy - .2, gy + .8);
   }
   floors.push({ p: p, y: fy });
   const hov = new THREE.Mesh(new THREE.ExtrudeGeometry(sh, { depth: WH, bevelEnabled: false }), new THREE.MeshBasicMaterial({ visible: false }));
@@ -1281,8 +1325,17 @@ for (const f of F.filter(f => f.k === 'dk')) { // árvízvédelmi gát: trapéz 
 }
 
 // ---------- lépcsők (OSM highway=steps, lépcsőfok-számmal) ----------
+// beton fokok, két oldalt beton arcfal, 5 foktól korlát; az udvari főlépcső szélesebb (Street View)
 {
-  const list = DATA.steps || [], mats = [];
+  const list = DATA.steps || [], mats = [], cheeks = [];
+  const railM = new THREE.MeshStandardMaterial({ color: 0x8d949a, roughness: .35, metalness: .8, envMap: ENV });
+  const I = new THREE.Matrix4();
+  // rúd két pont között (korlát)
+  const beam = (ax, ay, az, bx, by, bz, r) => {
+    const d = new THREE.Vector3(bx - ax, by - ay, bz - az), L = d.length(); if (L < .01) return;
+    const m = new THREE.Matrix4().compose(new THREE.Vector3((ax + bx) / 2, (ay + by) / 2, (az + bz) / 2), new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize()), new THREE.Vector3(1, 1, 1));
+    addGeo(new THREE.CylinderGeometry(r, r, L, 8), railM, m);
+  };
   for (const s of list) {
     const p = s.p; if (p.length < 6) continue;
     // polilinia hossza és pontjai (x,z)
@@ -1290,19 +1343,74 @@ for (const f of F.filter(f => f.k === 'dk')) { // árvízvédelmi gát: trapéz 
     const seg = []; let L = 0;
     for (let i = 1; i < pts.length; i++) { const l = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); seg.push(l); L += l; }
     if (L < .5) continue;
+    const W = STAIR_W[pts[0][0].toFixed(1) + ',' + pts[0][1].toFixed(1)] || 2.6;
     const h0 = H(pts[0][0], pts[0][1]), h1 = H(pts[pts.length - 1][0], pts[pts.length - 1][1]);
     const N = Math.max(2, s.n || Math.round(Math.abs(h1 - h0) / 0.16) || Math.round(L / 0.32));
     const at = t => { let d = t * L; for (let i = 0; i < seg.length; i++) { if (d <= seg[i] || i === seg.length - 1) { const k = seg[i] ? d / seg[i] : 0; return [pts[i][0] + (pts[i + 1][0] - pts[i][0]) * k, pts[i][1] + (pts[i + 1][1] - pts[i][1]) * k, Math.atan2(-(pts[i + 1][1] - pts[i][1]), pts[i + 1][0] - pts[i][0])]; } d -= seg[i]; } };
-    const lo = Math.min(h0, h1) - .4;
+    const lo = Math.min(h0, h1) - .4, rail = [];
     for (let i = 0; i < N; i++) {
       const [x, z, a] = at((i + .5) / N), top = h0 + (h1 - h0) * (i + (h1 > h0 ? 1 : 0)) / N + .14;
-      mats.push({ x, z, a, d: L / N + .02, top, lo });
+      mats.push({ x, z, a, d: L / N + .02, w: W, top, lo });
+      // arcfalak a lépcső két oldalán (fokonként lépcsőzve, a fok fölé 25 cm-rel)
+      for (const sd of [-1, 1]) cheeks.push({ x: x + Math.sin(a) * sd * (W / 2 + .1), z: z + Math.cos(a) * sd * (W / 2 + .1), a, d: L / N + .02, w: .2, top: top + .25, lo });
+      rail.push([x + Math.sin(a) * (W / 2 - .05), top, z + Math.cos(a) * (W / 2 - .05)]);
+    }
+    if (N >= 5) { // korlát a bal arcfalon: oszlopok + ferde kapaszkodó
+      const up = h1 > h0 ? rail : rail.slice().reverse(), q = up.map(([x, y, z]) => [x, y + .25, z]);
+      for (let i = 0; i < q.length; i += Math.max(1, Math.round(q.length / 4))) beam(q[i][0], q[i][1], q[i][2], q[i][0], q[i][1] + .9, q[i][2], .025);
+      beam(q[q.length - 1][0], q[q.length - 1][1], q[q.length - 1][2], q[q.length - 1][0], q[q.length - 1][1] + .9, q[q.length - 1][2], .025);
+      beam(q[0][0], q[0][1] + .9, q[0][2], q[q.length - 1][0], q[q.length - 1][1] + .9, q[q.length - 1][2], .03);
     }
   }
-  const im = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ map: T_CONCRETE, color: 0xd8d3c8, roughness: .95 }), Math.max(1, mats.length));
+  const all = [...mats, ...cheeks];
+  const im = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ map: T_CONCRETE, color: 0xd8d3c8, roughness: .95 }), Math.max(1, all.length));
   const o = new THREE.Object3D();
-  mats.forEach((m, i) => { const hh = Math.max(.05, m.top - m.lo); o.position.set(m.x, m.lo + hh / 2, m.z); o.rotation.set(0, m.a, 0); o.scale.set(m.d, hh, 2.6); o.updateMatrix(); im.setMatrixAt(i, o.matrix); });
-  im.count = mats.length; im.castShadow = im.receiveShadow = true; scene.add(im);
+  all.forEach((m, i) => { const hh = Math.max(.05, m.top - m.lo); o.position.set(m.x, m.lo + hh / 2, m.z); o.rotation.set(0, m.a, 0); o.scale.set(m.d, hh, m.w); o.updateMatrix(); im.setMatrixAt(i, o.matrix); });
+  im.count = all.length; im.castShadow = im.receiveShadow = true; scene.add(im);
+}
+
+// ---------- helyi részletek a Street View fotói alapján ----------
+{
+  const conc = new THREE.MeshStandardMaterial({ map: T_CONCRETE, color: 0xcfcac0, roughness: .95 }), I = new THREE.Matrix4();
+  // alacsony beton támfal a parkoló szélén, a lépcsőtől délre (előtte a kerékpártámasz, mögötte a füves udvar)
+  const wallLine = [[107.6, -54.0], [118.6, -54.5]];
+  for (let i = 0; i < 12; i++) {
+    const t0 = i / 12, t1 = (i + 1) / 12, [[ax, az], [bx, bz]] = wallLine;
+    const x0 = ax + (bx - ax) * t0, z0 = az + (bz - az) * t0, x1 = ax + (bx - ax) * t1, z1 = az + (bz - az) * t1, xm = (x0 + x1) / 2, zm = (z0 + z1) / 2;
+    const L = Math.hypot(x1 - x0, z1 - z0), a = Math.atan2(z1 - z0, x1 - x0);
+    const low = H(xm, zm - 1.2), top = Math.max(H(xm, zm + 1.2) + .12, low + .7);
+    box(frameAt(xm, 0, zm, a), conc, L + .02, top - low + .4, .3, 0, (top + low - .4) / 2, 0);
+    collider({ x: xm, z: zm, ang: a }, 0, 0, L / 2, .15, low - .4, top);
+  }
+  // OTP-automata a laborépület sarkán, sötétkék panelben (OSM amenity=atm, OTP Bank)
+  const atm = (DATA.poi || []).find(q => /otp/i.test(q.n || '')) || { p: [124.3, -63.0] };
+  const host = blds.filter(f => !f.custom && f.campus).map(f => {
+    let best = null;
+    for (let i = 0; i + 3 < f.p.length; i += 2) {
+      const ax = f.p[i], az = f.p[i + 1], dx = f.p[i + 2] - ax, dz = f.p[i + 3] - az, l2 = dx * dx + dz * dz || 1;
+      const t = Math.max(.1, Math.min(.9, ((atm.p[0] - ax) * dx + (atm.p[1] - az) * dz) / l2)), px = ax + t * dx, pz = az + t * dz, d = Math.hypot(px - atm.p[0], pz - atm.p[1]);
+      if (!best || d < best.d) best = { d, px, pz, ang: Math.atan2(dz, dx), f };
+    }
+    return best;
+  }).filter(Boolean).sort((a, b) => a.d - b.d)[0];
+  if (host && host.d < 6) {
+    let { px, pz, ang, f } = host;
+    // kifelé néző lokális +z
+    if (pip(px - Math.sin(ang) * .3, pz + Math.cos(ang) * .3, f.p)) ang += Math.PI;
+    const gy = H(px + -Math.sin(ang) * 1, pz + Math.cos(ang) * 1), fr = frameAt(px, gy, pz, ang);
+    const navy = new THREE.MeshStandardMaterial({ color: 0x1f3450, roughness: .5, metalness: .2, envMap: ENV });
+    const green = new THREE.MeshStandardMaterial({ color: 0x52ae32, roughness: .45 });
+    const otpTex = textTex(256, 128, (g, w, h) => { g.fillStyle = '#52ae32'; g.fillRect(0, 0, w, h); g.fillStyle = '#fff'; g.font = '800 64px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('otp', w / 2, h / 2 - 4); g.font = '600 24px system-ui'; g.fillText('bank', w / 2, h - 20); });
+    box(fr, navy, 2.0, 5.6, .12, 0, 2.8, .06);                       // sötétkék panelsáv a homlokzaton
+    box(fr, new THREE.MeshStandardMaterial({ color: 0x5d646b, roughness: .4, metalness: .6, envMap: ENV }), .9, 1.75, .28, 0, .88, .16); // automata
+    box(fr, green, 1.0, .28, .45, 0, 1.85, .25);                      // zöld napellenző
+    box(fr, new THREE.MeshStandardMaterial({ color: 0x0f1a14, emissive: 0x3a9a5a, emissiveIntensity: .35 }), .42, .3, .02, 0, 1.3, .31); // kijelző
+    box(fr, new THREE.MeshStandardMaterial({ color: 0x9aa1a7, roughness: .4, metalness: .6 }), .7, .06, .2, 0, 1.0, .38); // billentyűzet-polc
+    geoAt(fr, new THREE.MeshStandardMaterial({ map: otpTex, roughness: .5, emissive: 0xffffff, emissiveMap: otpTex, emissiveIntensity: .15 }), new THREE.PlaneGeometry(.9, .45), -1.6, 2.9, .26, 0, 0, 0, { cast: false });
+    box(fr, green, .95, .5, .2, -1.6, 2.9, .15);                        // „otp” tábla a falon
+    collider({ x: px, z: pz, ang }, 0, .2, .55, .25, gy - .2, gy + 2);
+  }
+  flushBatches();
 }
 
 // ---------- utcabútorok (OSM pontok) ----------
@@ -1354,7 +1462,7 @@ place('info', [[CY(.05, .05, 1.2), metal, .6], [B(1.0, .8, .06), std(0x1f3c63), 
 place('water', [[CY(.15, .2, 1.0, 10), metal, .5]]);
 place('vend', [[B(.9, 1.9, .8), std(0xb33a3a), .95]]);
 place('recycle', [[B(1.6, 1.5, 1.6), std(0x3d7d47), .75], [B(1.6, 1.5, 1.6), std(0xe0b52b), .75, 1.8], [B(1.6, 1.5, 1.6), std(0x2f6fb5), .75, 3.6]], { align: true });
-place('gate', [[B(.35, 1, .35), std(0xd9d9d9), .5], [B(5, .1, .1), std(0xd23b3b), 1, 2.6]], { align: true });
+place('gate', [[B(.3, 1, .3), std(0xd9d9d9), .5, 0, -2.6], [B(.12, .12, 5), std(0xd23b3b), .95, 0, 0], [B(.13, .02, .5), std(0xf2f2f2), 1.02, 0, -1.2], [B(.13, .02, .5), std(0xf2f2f2), 1.02, 0, 1.2]], { align: true });
 place('memorial', [[B(1.2, 1.4, 1.2), concrete, .7], [CY(.25, .35, 1.4, 8), std(0x5d6b5e, { metalness: .5 }), 2.1]]);
 place('art', [[B(1.2, .8, 1.2), concrete, .4], [new THREE.TorusKnotGeometry(.45, .12, 48, 8), std(0x6b5a45, { metalness: .6, roughness: .4 }), 1.5]]);
 place('fountain', [[CY(2.2, 2.4, .5, 24), concrete, .25], [CY(2.0, 2.0, .05, 24), std(0x5aa6cf, { roughness: .1, metalness: .2 }), .48], [CY(.15, .2, 1.5, 8), concrete, .75]]);
