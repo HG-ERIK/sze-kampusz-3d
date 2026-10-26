@@ -1097,7 +1097,7 @@ if (UVEGES) {
     const lx = Lx * .22, lz = -4, [wx, wz] = tw(lx, lz), gy = H(wx, wz), f2 = frameAt(nw[0], gy, nw[1], ang);
     const cols = [0xc23a2f, 0x1f5fb0, 0x2e8b45, 0xc23a2f, 0x1f5fb0, 0xe0b52b, 0x2e8b45, 0x1f5fb0];
     for (let i = 0; i < 8; i++) geoAt(f2, new THREE.MeshStandardMaterial({ color: cols[i], roughness: .8, side: THREE.DoubleSide }), new THREE.ConeGeometry(4.6, 1.1, 1, 1, true, i * Math.PI / 4, Math.PI / 4), lx, 3.35, lz);
-    for (let i = 0; i < 8; i++) { const a = (i + .5) * Math.PI / 4; box(f2, new THREE.MeshStandardMaterial({ color: cols[i], roughness: .8 }), 3.5, .32, .02, lx + Math.sin(a) * 4.25, 2.66, lz + Math.cos(a) * 4.25, a + Math.PI / 2); }
+    for (let i = 0; i < 8; i++) { const a = (i + .5) * Math.PI / 4; box(f2, new THREE.MeshStandardMaterial({ color: cols[i], roughness: .8 }), 3.5, .32, .02, lx + Math.sin(a) * 4.25, 2.66, lz + Math.cos(a) * 4.25, a); }
     geoAt(f2, steel, new THREE.CylinderGeometry(.07, .09, 3.9, 10), lx, 1.95, lz);
     for (const [dx, dz] of [[-1.7, -1.4], [1.7, -1.4], [-1.7, 1.4], [1.7, 1.4]]) { picnic(f2, lx + dx, lz + dz, 0); collider(K, lx + dx, lz + dz, 1.0, .95, gy - .2, gy + .8); }
     const bin = new THREE.MeshStandardMaterial({ color: 0x2f9d4a, roughness: .5 });
@@ -1235,6 +1235,17 @@ for (const f of F.filter(f => f.k === 'dk')) { // árvízvédelmi gát: trapéz 
 
 // ---------- lépcsők (OSM highway=steps, lépcsőfok-számmal) ----------
 // beton fokok, két oldalt beton arcfal, 5 foktól korlát; az udvari főlépcső szélesebb (Street View)
+const stepGrid = new Map();
+// a pont fölötti lépcsőfok teteje (ha nincs magasabban, mint y + 0,5 m), különben -Infinity
+function stairTop(x, z, y) {
+  let t = -Infinity;
+  for (const m of stepGrid.get(Math.floor(x / 10) + ',' + Math.floor(z / 10)) || []) {
+    if (m.top > y + .5) continue;
+    const dx = x - m.x, dz = z - m.z, c = Math.cos(m.a), s = Math.sin(m.a);
+    if (Math.abs(dx * c - dz * s) <= m.d / 2 && Math.abs(dx * s + dz * c) <= m.w / 2) t = Math.max(t, m.top);
+  }
+  return t;
+}
 {
   const list = DATA.steps || [], mats = [], cheeks = [];
   const railM = new THREE.MeshStandardMaterial({ color: 0x8d949a, roughness: .35, metalness: .8, envMap: ENV });
@@ -1269,6 +1280,12 @@ for (const f of F.filter(f => f.k === 'dk')) { // árvízvédelmi gát: trapéz 
       for (let i = 0; i < q.length; i += Math.max(1, Math.round(q.length / 4))) beam(q[i][0], q[i][1], q[i][2], q[i][0], q[i][1] + .9, q[i][2], .025);
       beam(q[q.length - 1][0], q[q.length - 1][1], q[q.length - 1][2], q[q.length - 1][0], q[q.length - 1][1] + .9, q[q.length - 1][2], .025);
       beam(q[0][0], q[0][1] + .9, q[0][2], q[q.length - 1][0], q[q.length - 1][1] + .9, q[q.length - 1][2], .03);
+    }
+  }
+  for (const m of mats) {
+    const r = Math.hypot(m.d, m.w) / 2;
+    for (let gx = Math.floor((m.x - r) / 10); gx <= Math.floor((m.x + r) / 10); gx++) for (let gz = Math.floor((m.z - r) / 10); gz <= Math.floor((m.z + r) / 10); gz++) {
+      const k = gx + ',' + gz; if (!stepGrid.has(k)) stepGrid.set(k, []); stepGrid.get(k).push(m);
     }
   }
   const all = [...mats, ...cheeks];
@@ -1488,28 +1505,198 @@ function fromHash() {
 }
 fromHash(); addEventListener('hashchange', fromHash);
 
-// ---------- teleport gombok ----------
-const tp = document.getElementById('tp');
-const startBtn = document.createElement('button'); startBtn.textContent = '★ Kezdőpont (belső udvar)';
-startBtn.onclick = () => { goStart(); begin(); }; tp.appendChild(startBtn);
-if (CAR) {
-  const b = document.createElement('button'); b.textContent = '🚃 Vasúti kocsi (belül)';
-  b.onclick = () => { Object.assign(player, { x: CAR.x, z: CAR.z, y: CAR.yF, vy: 0, fly: false, pitch: 0, yaw: -CAR.ang - Math.PI / 2 }); begin(); }; tp.appendChild(b);
+
+// ---------- autó: saját járműfizika ----------
+// Merev test (tömeg, tehetetlenségi nyomaték) + 4 kerék: kerekenként rugó, csillapító és ütköző a
+// felfüggesztésben, a gumiknál hossz- és oldalirányú tapadás súrlódási körrel. A kerekek a terepet,
+// a belső padlókat és a lépcsőfokokat is érzik, így fel lehet zötykölődni pl. az Üveges melletti lépcsőn.
+const CP = { m: 1250, I: new THREE.Vector3(2150, 2300, 560), k: 30000, c: 3400, rest: .38, r: .33, mu: 1.1, Cs: 9000, eng: 6400, vmax: 38, brake: 10000 };
+const WH = [[-.79, -.12, -1.3, 1], [.79, -.12, -1.3, 1], [-.79, -.12, 1.32, 0], [.79, -.12, 1.32, 0]]; // x, y, z (előre = -z), kormányzott
+const car = { spawned: false, driving: false, p: new THREE.Vector3(), v: new THREE.Vector3(), q: new THREE.Quaternion(), w: new THREE.Vector3(),
+  steer: 0, throttle: 0, cam: 0, camYaw: 0, camPitch: .18, wheels: WH.map(() => ({ comp: 0, len: CP.rest, spin: 0, contact: false })), group: null, wheelMeshes: [] };
+const carSurf = (x, z, y) => Math.max(groundAt(x, z, y), stairTop(x, z, y));
+{ // modell: oldalprofilból kihúzott karosszéria, üvegezett utastér, kerekek, lámpák
+  const g = new THREE.Group(), W = 1.74;
+  const paint = new THREE.MeshStandardMaterial({ color: 0xc8202a, roughness: .32, metalness: .55, envMap: ENV, envMapIntensity: 1.2 });
+  const glassC = new THREE.MeshStandardMaterial({ color: 0x141a20, roughness: .05, metalness: .6, envMap: ENV, envMapIntensity: 1.4 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x1b1d20, roughness: .7 });
+  const prof = (pts, w, mat, x0 = 0) => {
+    const sh = new THREE.Shape(pts.map(([z, y]) => new THREE.Vector2(z, y)));
+    const geo = new THREE.ExtrudeGeometry(sh, { depth: w, bevelEnabled: true, bevelThickness: .04, bevelSize: .04, bevelSegments: 2 });
+    geo.translate(0, 0, -w / 2); geo.rotateY(-Math.PI / 2);
+    const m = new THREE.Mesh(geo, mat); m.position.x = x0; m.castShadow = true; m.receiveShadow = true; g.add(m); return m;
+  };
+  // karosszéria a övvonalig, kerékjárati kivágásokkal
+  const arch = (zc, n = 8) => { const out = []; for (let i = 0; i <= n; i++) { const a = Math.PI - i / n * Math.PI; out.push([zc + Math.cos(a) * .42, -.42 + Math.sin(a) * .42]); } return out; };
+  prof([[-2.12, -.3], ...arch(-1.3).map(([z, y]) => [z, Math.max(y, -.3)]), ...arch(1.32).map(([z, y]) => [z, Math.max(y, -.3)]), [2.12, -.3], [2.15, .42], [1.95, .5], [-.9, .45], [-2.0, .26], [-2.17, .02]], W, paint);
+  prof([[-.95, .43], [-.42, .88], [.75, .9], [1.62, .5], [1.75, .43]], W - .16, glassC);           // üvegezett utastér
+  prof([[-.45, .86], [.78, .88], [.7, .95], [-.38, .93]], W - .1, paint);                          // tető
+  for (const s of [-1, 1]) {                                                                        // A- és C-oszlop
+    const pil = new THREE.Mesh(new THREE.BoxGeometry(.06, .5, .1), paint); pil.position.set(s * (W / 2 - .1), .66, -.68); pil.rotation.x = -.85; g.add(pil);
+  }
+  const lamp = (c, i) => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: i, roughness: .3 });
+  for (const s of [-1, 1]) {
+    const hl = new THREE.Mesh(new THREE.BoxGeometry(.38, .12, .06), lamp(0xfff6e0, .8)); hl.position.set(s * .6, .14, -2.15); g.add(hl);
+    const tl = new THREE.Mesh(new THREE.BoxGeometry(.36, .14, .06), lamp(0xd01515, .6)); tl.position.set(s * .62, .33, 2.13); g.add(tl);
+  }
+  const grille = new THREE.Mesh(new THREE.BoxGeometry(.8, .14, .05), dark); grille.position.set(0, .0, -2.16); g.add(grille);
+  const bump = new THREE.Mesh(new THREE.BoxGeometry(W + .04, .16, .12), dark); bump.position.set(0, -.24, -2.12); g.add(bump);
+  const bump2 = bump.clone(); bump2.position.z = 2.12; g.add(bump2);
+  const plateT = textTex(256, 56, (c, w, h) => { c.fillStyle = '#fff'; c.fillRect(0, 0, w, h); c.fillStyle = '#1f3fa0'; c.fillRect(0, 0, 22, h); c.fillStyle = '#111'; c.font = '700 40px system-ui'; c.textBaseline = 'middle'; c.fillText('SZE-001', 34, h / 2 + 2); });
+  for (const z of [-2.19, 2.19]) { const pl = new THREE.Mesh(new THREE.PlaneGeometry(.52, .12), new THREE.MeshStandardMaterial({ map: plateT, roughness: .5 })); pl.position.set(0, -.12, z); if (z > 0) pl.rotation.y = Math.PI; else pl.rotation.y = Math.PI; pl.rotation.y = z < 0 ? Math.PI : 0; g.add(pl); }
+  // kerekek: gumi + felni
+  const tireG = new THREE.CylinderGeometry(CP.r, CP.r, .23, 20); tireG.rotateZ(Math.PI / 2);
+  const rimG = new THREE.CylinderGeometry(CP.r * .62, CP.r * .62, .24, 10); rimG.rotateZ(Math.PI / 2);
+  const tireM = new THREE.MeshStandardMaterial({ color: 0x18191b, roughness: .9 }), rimM = new THREE.MeshStandardMaterial({ color: 0xbfc4c8, roughness: .3, metalness: .85, envMap: ENV });
+  for (const [x, y, z] of WH) {
+    const steerG = new THREE.Group(), spinG = new THREE.Group();
+    const t = new THREE.Mesh(tireG, tireM), r = new THREE.Mesh(rimG, rimM); t.castShadow = true;
+    spinG.add(t, r); for (let i = 0; i < 5; i++) { const sp = new THREE.Mesh(new THREE.BoxGeometry(.25, .05, CP.r * 1.1), rimM); sp.rotation.x = i * Math.PI / 5; spinG.add(sp); }
+    steerG.add(spinG); steerG.position.set(x, y, z); g.add(steerG); car.wheelMeshes.push({ steerG, spinG });
+  }
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  g.visible = false; scene.add(g); car.group = g;
 }
-if (UV) {
-  const b = document.createElement('button'); b.textContent = '🍺 Üveges (belül)';
-  b.onclick = () => {
-    const { K, Lx, Wd } = UV, c = Math.cos(K.ang), s = Math.sin(K.ang), lx = Lx * .32, lz = Wd * .5;
-    Object.assign(player, { x: K.x + lx * c - lz * s, z: K.z + lx * s + lz * c, y: UV.fy, vy: 0, fly: false, pitch: -0.05, yaw: -K.ang - Math.PI / 2 });
-    begin();
-  }; tp.appendChild(b);
+const _f = new THREE.Vector3(), _r = new THREE.Vector3(), _u = new THREE.Vector3(), _mnt = new THREE.Vector3(), _rel = new THREE.Vector3(), _vc = new THREE.Vector3(),
+  _F = new THREE.Vector3(), _T = new THREE.Vector3(), _tmp = new THREE.Vector3(), _wf = new THREE.Vector3(), _wr = new THREE.Vector3(), _iq = new THREE.Quaternion(), _dq = new THREE.Quaternion();
+const carYaw = () => { _f.set(0, 0, -1).applyQuaternion(car.q); return Math.atan2(-_f.x, -_f.z); };
+// a karosszéria épületbe/ütközőbe ér-e (a test körvonalán vett pontok)
+function carBlocked(p, q) {
+  for (const [x, z] of [[-.9, -2.1], [.9, -2.1], [-.9, 2.1], [.9, 2.1], [-.92, -.7], [.92, -.7], [-.92, .7], [.92, .7], [0, -2.2], [0, 2.2]]) {
+    _tmp.set(x, 0, z).applyQuaternion(q).add(p);
+    if (blockedAt(_tmp.x, _tmp.z, p.y - .35)) return true;
+  }
+  return false;
 }
-const seen = new Set();
-named.filter(f => f.campus).sort((a, b) => a.n.localeCompare(b.n, 'hu')).forEach(f => {
-  if (seen.has(f.n)) return; seen.add(f.n);
-  const b = document.createElement('button'); b.textContent = f.n;
-  b.onclick = () => { teleportTo(f); begin(); }; tp.appendChild(b);
-});
+function carPhysics(h, inp) {
+  const { p, v, q, w } = car;
+  _f.set(0, 0, -1).applyQuaternion(q); _r.set(1, 0, 0).applyQuaternion(q); _u.set(0, 1, 0).applyQuaternion(q);
+  _F.set(0, -9.81 * CP.m, 0); _T.set(0, 0, 0);
+  const speed = v.length(), vFwd = v.dot(_f);
+  // kormány: sebességfüggő maximális kitérés, fokozatos mozgás
+  const maxSt = .62 / (1 + speed / 11), tgt = inp.steer * maxSt;
+  car.steer += Math.sign(tgt - car.steer) * Math.min(Math.abs(tgt - car.steer), 2.4 * h);
+  // gáz / fék / hátramenet
+  let drive = 0, brake = false;
+  if (inp.acc > 0) { if (vFwd < -.8) brake = true; else drive = inp.acc; }
+  else if (inp.acc < 0) { if (vFwd > .8) brake = true; else drive = inp.acc * .55; }
+  for (let i = 0; i < 4; i++) {
+    const [lx, ly, lz, steered] = WH[i], wh = car.wheels[i];
+    _mnt.set(lx, ly, lz).applyQuaternion(q).add(p);
+    const gnd = carSurf(_mnt.x, _mnt.z, _mnt.y + .2), dist = _mnt.y - gnd, comp = CP.rest + CP.r - dist;
+    if (comp <= 0) { wh.contact = false; wh.comp = 0; wh.len = CP.rest; continue; }
+    wh.contact = true;
+    const cv = (comp - wh.comp) / h; wh.comp = comp; wh.len = Math.max(.05, dist - CP.r);
+    const bumpStop = comp > CP.rest ? (comp - CP.rest) * CP.k * 4 : 0;       // felütköző
+    // a lengéscsillapító ereje korlátos (nem dob fel egy hirtelen fokon)
+    const Fz = Math.min(26000, Math.max(0, CP.k * comp + Math.max(-6000, Math.min(9000, CP.c * cv)) + bumpStop));
+    // kerék iránya (a kormányzott első kerekek elfordulnak), a talaj síkjára vetítve
+    const st = steered ? car.steer : 0;
+    _wf.copy(_f).multiplyScalar(Math.cos(st)).addScaledVector(_r, -Math.sin(st)); _wf.y = 0; _wf.normalize();
+    _wr.set(-_wf.z, 0, _wf.x);
+    _rel.set(_mnt.x - p.x, gnd - p.y, _mnt.z - p.z);
+    _vc.copy(w).cross(_rel).add(v);
+    const vl = _vc.dot(_wf), vs = _vc.dot(_wr);
+    let Fl, Cs = CP.Cs;
+    if (inp.hand && !steered) { Fl = -vl * CP.Cs; Cs *= .22; }                  // kézifék: hátsó kerék blokkol, csúszik
+    else if (brake) Fl = -Math.sign(vl) * CP.brake / 4 - vl * 200;
+    else if (drive) Fl = drive * CP.eng / 4 * Math.max(0, 1 - Math.abs(vl) / CP.vmax);
+    else Fl = Math.abs(vl) < 1.2 ? -vl * CP.Cs * .5 : -vl * 160;                // motorfék / megállás lejtőn
+    let Fs = -vs * Cs;
+    const lim = CP.mu * Fz, mag = Math.hypot(Fl, Fs);
+    if (mag > lim) { Fl *= lim / mag; Fs *= lim / mag; }
+    // rugóerő függőlegesen az érintkezési pontban, gumierők kicsit a talaj fölött (kevesebb billegés)
+    _tmp.set(0, Fz, 0); _F.add(_tmp); _T.add(_vc.copy(_rel).cross(_tmp));
+    _tmp.copy(_wf).multiplyScalar(Fl).addScaledVector(_wr, Fs); _F.add(_tmp);
+    _rel.y += .28; _T.add(_vc.copy(_rel).cross(_tmp));
+    wh.spin += vl / CP.r * h;
+  }
+  _F.addScaledVector(v, -.42 * speed);                                          // légellenállás
+  v.addScaledVector(_F, h / CP.m);
+  // szöggyorsulás a test saját koordinátáiban (átlós tehetetlenségi tenzor)
+  _iq.copy(q).invert(); _T.applyQuaternion(_iq); _T.divide(CP.I).applyQuaternion(q);
+  w.addScaledVector(_T, h).multiplyScalar(1 - .6 * h);
+  const prevP = _mnt.copy(p), prevQ = _iq.copy(q);
+  p.addScaledVector(v, h);
+  _dq.set(w.x * h * .5, w.y * h * .5, w.z * h * .5, 0).multiply(q);
+  q.set(q.x + _dq.x, q.y + _dq.y, q.z + _dq.z, q.w + _dq.w).normalize();
+  // ütközés épülettel / fallal: vissza az előző helyzetbe, a sebesség visszapattan és csillapodik
+  if (carBlocked(p, q)) {
+    p.x = prevP.x; p.z = prevP.z; q.copy(prevQ);
+    v.x *= -.25; v.z *= -.25; w.multiplyScalar(.4);
+  }
+  // a karosszéria ne süllyedjen a talajba
+  const gc = carSurf(p.x, p.z, p.y + .2);
+  if (p.y < gc + .1) { p.y = gc + .1; if (v.y < 0) v.y = 0; }
+  if (p.y < H(p.x, p.z) - 5) resetCar();
+}
+function placeCar(x, z, yaw) {
+  car.q.setFromAxisAngle(_u.set(0, 1, 0), yaw);
+  car.p.set(x, carSurf(x, z, H(x, z) + 50) + .75, z); car.v.set(0, 0, 0); car.w.set(0, 0, 0); car.steer = 0;
+  for (const wh of car.wheels) wh.comp = 0;
+  car.spawned = true; car.group.visible = true;
+}
+function resetCar() { placeCar(car.p.x, car.p.z, carYaw()); car.p.y += .5; }
+// autó a játékos elé (szabad helyre)
+function spawnCar(dist = 4.5) {
+  const fx = -Math.sin(player.yaw), fz = -Math.cos(player.yaw);
+  for (const d of [dist, dist - 1.5, dist + 2, 0]) {
+    const x = player.x + fx * d, z = player.z + fz * d;
+    placeCar(x, z, player.yaw);
+    if (!carBlocked(car.p, car.q)) return true;
+  }
+  return true;
+}
+function enterCar() { car.driving = true; car.camYaw = 0; player.fly = false; updateHint(); }
+function exitCar() {
+  const yaw = carYaw();
+  for (const [sx, sz] of [[-1.9, 0], [1.9, 0], [0, 3.2], [0, -3.2]]) {
+    _tmp.set(sx, 0, sz).applyQuaternion(car.q).add(car.p);
+    if (!blockedAt(_tmp.x, _tmp.z, car.p.y - .5)) { Object.assign(player, { x: _tmp.x, z: _tmp.z, y: groundAt(_tmp.x, _tmp.z, car.p.y), vy: 0, yaw, pitch: 0 }); break; }
+  }
+  car.driving = false; updateHint();
+}
+function carUpdate(dt) {
+  if (!car.spawned) return;
+  const inp = { acc: 0, steer: 0, hand: false };
+  if (car.driving && running) {
+    inp.acc = (keys.KeyW || keys.ArrowUp ? 1 : 0) - (keys.KeyS || keys.ArrowDown ? 1 : 0);
+    inp.steer = (keys.KeyA || keys.ArrowLeft ? 1 : 0) - (keys.KeyD || keys.ArrowRight ? 1 : 0);
+    inp.hand = !!keys.Space;
+    if (joy.id !== null) { inp.acc = -joy.y; inp.steer = -joy.x; }
+  }
+  const n = Math.ceil(dt / (1 / 240));
+  for (let i = 0; i < n; i++) carPhysics(dt / n, inp);
+  // modell frissítése
+  car.group.position.copy(car.p); car.group.quaternion.copy(car.q);
+  car.wheelMeshes.forEach(({ steerG, spinG }, i) => {
+    const [, ly] = WH[i], wh = car.wheels[i];
+    steerG.position.y = ly - wh.len; steerG.rotation.y = WH[i][3] ? car.steer : 0; spinG.rotation.x = -wh.spin;
+  });
+  if (car.driving) { player.x = car.p.x; player.z = car.p.z; player.y = car.p.y - .6; player.yaw = carYaw(); }
+  car.camYaw *= Math.exp(-1.5 * dt);
+}
+const _cam = new THREE.Vector3(), _look = new THREE.Vector3();
+function carCamera(dt) {
+  const yaw = carYaw() + car.camYaw;
+  if (car.cam === 1) { // motorháztető-nézet
+    _cam.set(0, 1.08, -1.05).applyQuaternion(car.q).add(car.p); camera.position.copy(_cam);
+    _look.set(-Math.sin(yaw), -.06, -Math.cos(yaw)).add(_cam); camera.lookAt(_look); return;
+  }
+  const d = 6.4, hgt = 2.3;
+  _cam.set(car.p.x + Math.sin(yaw) * d, car.p.y + hgt, car.p.z + Math.cos(yaw) * d);
+  _cam.y = Math.max(_cam.y, H(_cam.x, _cam.z) + .6);
+  if (dt === 0 || camera.position.distanceTo(_cam) > 30) camera.position.copy(_cam); else camera.position.lerp(_cam, 1 - Math.exp(-7 * dt));
+  _look.set(car.p.x, car.p.y + .9, car.p.z); camera.lookAt(_look);
+}
+const hint = document.getElementById('hint'), actBtn = document.getElementById('actBtn');
+function updateHint() {
+  hint.textContent = car.driving
+    ? 'W/S gáz-fék · A/D kormány · Space kézifék · R visszaállítás · V kamera · E kiszállás · Esc menü'
+    : 'WASD mozgás · egér nézés · Shift futás · E beszállás · G autó ide · F repülés · M térkép · Esc menü';
+  actBtn.textContent = car.driving ? '🚶' : '🚗';
+}
+updateHint();
 
 // ---------- bemenet ----------
 const keys = {};
@@ -1518,16 +1705,29 @@ const isTouch = matchMedia('(pointer: coarse)').matches;
 let running = false;
 function begin() {
   overlay.classList.add('hidden'); running = true;
-  if (isTouch) { menuBtn.style.display = 'block'; document.getElementById('joy').style.display = 'block'; }
+  if (isTouch) { menuBtn.style.display = 'block'; actBtn.style.display = 'block'; document.getElementById('joy').style.display = 'block'; }
   else canvas.requestPointerLock?.();
 }
-function pause() { running = false; overlay.classList.remove('hidden'); menuBtn.style.display = 'none'; document.getElementById('joy').style.display = 'none'; }
-document.getElementById('start').onclick = begin;
+function pause() { running = false; overlay.classList.remove('hidden'); menuBtn.style.display = 'none'; actBtn.style.display = 'none'; document.getElementById('joy').style.display = 'none'; }
+// a menü két gombja: séta vagy autó (bármikor át lehet váltani)
+document.getElementById('goWalk').onclick = () => { if (car.driving) exitCar(); begin(); };
+document.getElementById('goCar').onclick = () => {
+  if (!car.driving) { if (!car.spawned || car.p.distanceTo(_tmp.set(player.x, car.p.y, player.z)) > 30) spawnCar(car.spawned ? 4.5 : 0); enterCar(); }
+  begin();
+};
+// E: be-/kiszállás, G: autó a játékos elé (érintőképernyőn a kerek gomb)
+function action(spawnIfFar) {
+  if (car.driving) { exitCar(); return; }
+  const near = car.spawned && Math.hypot(car.p.x - player.x, car.p.z - player.z) < 5;
+  if (near) enterCar(); else if (spawnIfFar) { spawnCar(); enterCar(); }
+}
+actBtn.onclick = () => action(true);
 menuBtn.onclick = pause;
 document.addEventListener('pointerlockchange', () => { if (!document.pointerLockElement && !isTouch) pause(); });
 canvas.addEventListener('click', () => { if (running && !isTouch && !document.pointerLockElement) canvas.requestPointerLock?.(); });
 document.addEventListener('mousemove', e => {
   if (document.pointerLockElement !== canvas) return;
+  if (car.driving) { car.camYaw -= e.movementX * 0.003; return; }
   player.yaw -= e.movementX * 0.0022; player.pitch -= e.movementY * 0.0022;
   player.pitch = Math.max(-1.5, Math.min(1.5, player.pitch));
 });
@@ -1537,6 +1737,14 @@ addEventListener('keydown', e => {
   if (running && !e.repeat) {
     if (e.code === 'ArrowLeft') player.yaw += 0.04;
     if (e.code === 'ArrowRight') player.yaw -= 0.04;
+  }
+  if (running && !e.repeat && e.code === 'KeyE') action(false);
+  if (running && !e.repeat && e.code === 'KeyG' && !car.driving) spawnCar();
+  if (car.driving) {
+    if (e.code === 'KeyR') resetCar();
+    if (e.code === 'KeyV') car.cam = 1 - car.cam;
+    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
+    return;
   }
   if (e.code === 'KeyF') { player.fly = !player.fly; player.vy = 0; if (player.fly) player.y = Math.max(player.y, H(player.x, player.z)); }
   if (e.code === 'KeyL') labels.visible = !labels.visible;
@@ -1558,6 +1766,7 @@ canvas.addEventListener('touchstart', e => {
 canvas.addEventListener('touchmove', e => {
   for (const t of e.changedTouches) {
     if (t.identifier === joy.id) { joy.x = Math.max(-1, Math.min(1, (t.clientX - joy.ox) / 50)); joy.y = Math.max(-1, Math.min(1, (t.clientY - joy.oy) / 50)); joyKnob.style.transform = `translate(${joy.x * 40}px,${joy.y * 40}px)`; }
+    if (t.identifier === look.id && car.driving) { car.camYaw -= (t.clientX - look.x) * 0.005; look.x = t.clientX; look.y = t.clientY; continue; }
     if (t.identifier === look.id) { player.yaw -= (t.clientX - look.x) * 0.005; player.pitch = Math.max(-1.5, Math.min(1.5, player.pitch - (t.clientY - look.y) * 0.005)); look.x = t.clientX; look.y = t.clientY; }
   }
 }, { passive: true });
@@ -1655,9 +1864,9 @@ function step(dt) {
   }
   player.x = Math.max(-EXT, Math.min(EXT, player.x)); player.z = Math.max(-EXT, Math.min(EXT, player.z));
 }
-function renderFrame() {
-  camera.position.set(player.x, player.y + EYE, player.z);
-  camera.rotation.set(player.pitch, player.yaw, 0);
+function renderFrame(dt = 0) {
+  if (car.driving) carCamera(dt);
+  else { camera.position.set(player.x, player.y + EYE, player.z); camera.rotation.set(player.pitch, player.yaw, 0); }
   sun.target.position.set(player.x, 0, player.z); sun.position.copy(sun.target.position).add(SUN_OFF);
   sky.position.copy(camera.position);
   renderer.render(scene, camera);
@@ -1665,19 +1874,25 @@ function renderFrame() {
 function loop() {
   requestAnimationFrame(loop);
   const dt = Math.min(clock.getDelta(), 0.05);
-  if (running) step(dt);
+  if (running && !car.driving) step(dt);
+  carUpdate(dt);
   if (window.__kampusz.pause) return;
   if (++frame % 6 === 0) {
     updateHover(); drawMini();
     const [la, lo] = toLatLon(player.x, player.z);
-    status.textContent = `${player.fly ? '✈ Repülés' : '🚶 Séta'} · ${la.toFixed(5)}, ${lo.toFixed(5)} · magasság ${player.y.toFixed(1)} m`;
+    status.textContent = car.driving ? `🚗 ${Math.round(car.v.length() * 3.6)} km/h · ${la.toFixed(5)}, ${lo.toFixed(5)}`
+      : `${player.fly ? '✈ Repülés' : '🚶 Séta'} · ${la.toFixed(5)}, ${lo.toFixed(5)} · magasság ${player.y.toFixed(1)} m`;
   }
-  renderFrame();
+  renderFrame(dt);
 }
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
 // tesztelési horog: egy képkocka kirajzolása és lementése (fej nélküli böngészőhöz)
 window.__kampusz = { pause: false, player, H, groundAt, blockedAt, scene, renderer, camera, CAR: () => CAR, UV: () => UV,
   sim(k, t) { for (const c of k) keys[c] = true; for (let i = 0; i < t / 0.02; i++) step(0.02); for (const c of k) keys[c] = false; return { x: +player.x.toFixed(2), z: +player.z.toFixed(2), y: +player.y.toFixed(2) }; },
+  car, spawnCar, enterCar, exitCar, placeCar, carYaw,
+  // autó-szimuláció rögzített lépésközzel: k = lenyomott billentyűk, t = másodperc
+  carSim(k, t) { const was = running; running = true; for (const c of k) keys[c] = true; for (let i = 0; i < t / (1 / 60); i++) carUpdate(1 / 60); for (const c of k) keys[c] = false; running = was;
+    return { x: +car.p.x.toFixed(2), y: +car.p.y.toFixed(2), z: +car.p.z.toFixed(2), v: +(car.v.length() * 3.6).toFixed(1), yaw: +(carYaw() * 180 / Math.PI).toFixed(0), up: +_u.set(0, 1, 0).applyQuaternion(car.q).y.toFixed(3) }; },
   snap(type = "image/jpeg") { renderFrame(); updateHover(); drawMini(); renderFrame(); return renderer.domElement.toDataURL(type, .9); } };
 document.getElementById('loading').remove();
 drawMini(); loop();
