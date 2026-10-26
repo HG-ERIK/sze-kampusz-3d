@@ -1,6 +1,6 @@
 # SZE kampusz 3D Written completely by Claude
 
-
+https://hg-erik.github.io/sze-kampusz-3d/
 
 ## Források, licencek
 
